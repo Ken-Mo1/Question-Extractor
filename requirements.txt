@@ -2,11 +2,11 @@ streamlit
 pandas
 numpy
 PyMuPDF
-opencv-python
+opencv-python-headless
 pillow
 python-docx
 paddleocr
-paddlepaddle
+paddlepaddle-tiny
 sentence-transformers
 faiss-cpu
 openai
