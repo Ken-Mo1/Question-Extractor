@@ -1,0 +1,17 @@
+streamlit
+pandas
+numpy
+PyMuPDF
+opencv-python
+pillow
+python-docx
+paddleocr
+paddlepaddle
+sentence-transformers
+faiss-cpu
+openai
+rapidfuzz
+langdetect
+pdf2image
+tqdm
+pytesseract
