@@ -181,6 +181,13 @@ class ChapterMapper:
             "fundamental theorem of arithmetic": "Real Numbers",
             "prime factorisation": "Real Numbers",
             "prime factorization": "Real Numbers",
+            "rational number": "Real Numbers",
+            "irrational number": "Real Numbers",
+            "terminating decimal": "Real Numbers",
+            "non terminating": "Real Numbers",
+            "recurring decimal": "Real Numbers",
+            "co prime": "Real Numbers",
+            "coprime": "Real Numbers",
 
             # Polynomials
             "polynomial": "Polynomials",
@@ -197,6 +204,12 @@ class ChapterMapper:
             "substitution method": "Pair of Linear Equations in Two Variables",
             "elimination method": "Pair of Linear Equations in Two Variables",
             "cross multiplication": "Pair of Linear Equations in Two Variables",
+            "parallel lines": "Pair of Linear Equations in Two Variables",
+            "coincident lines": "Pair of Linear Equations in Two Variables",
+            "intersecting lines": "Pair of Linear Equations in Two Variables",
+            "unique solution": "Pair of Linear Equations in Two Variables",
+            "infinitely many solutions": "Pair of Linear Equations in Two Variables",
+            "no solution": "Pair of Linear Equations in Two Variables",
 
             # Quadratic Equations
             "quadratic equation": "Quadratic Equations",
@@ -204,6 +217,11 @@ class ChapterMapper:
             "discriminant": "Quadratic Equations",
             "nature of roots": "Quadratic Equations",
             "completing the square": "Quadratic Equations",
+            "roots of the equation": "Quadratic Equations",
+            "real and equal roots": "Quadratic Equations",
+            "real roots": "Quadratic Equations",
+            "sum of roots": "Quadratic Equations",
+            "product of roots": "Quadratic Equations",
 
             # Arithmetic Progressions
             "arithmetic progression": "Arithmetic Progressions",
@@ -217,6 +235,9 @@ class ChapterMapper:
             "similar triangles": "Triangles",
             "basic proportionality theorem": "Triangles",
             "bpt": "Triangles",
+            "congruent triangles": "Triangles",
+            "corresponding sides": "Triangles",
+            "corresponding angles": "Triangles",
 
             # Coordinate Geometry
             "distance formula": "Coordinate Geometry",
@@ -533,7 +554,25 @@ class ChapterMapper:
 
         for keyword in sorted(mapping.keys(), key=len, reverse=True):
 
-            if keyword in q:
-                return mapping[keyword]
+            # BUG FIX: multi-word keywords used to require an EXACT
+            # substring match, in the exact word order written in this
+            # dictionary. A real question asking "...makes the two
+            # triangles similar" never matched the keyword "similar
+            # triangles" - same words, reversed order - and fell
+            # through to "Unknown" even though "Triangles" was right
+            # there. Now: for a multi-word keyword, every word in it
+            # must appear somewhere in the question (any order, as
+            # whole words) - single-word keywords are unchanged.
+            words = keyword.split()
+
+            if len(words) == 1:
+                if re.search(r'\b' + re.escape(keyword) + r'\b', q):
+                    return mapping[keyword]
+            else:
+                if all(
+                    re.search(r'\b' + re.escape(w) + r'\b', q)
+                    for w in words
+                ):
+                    return mapping[keyword]
 
         return "Unknown"

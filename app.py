@@ -78,13 +78,21 @@ if manual_clear:
 
 st.sidebar.markdown("---")
 
-year_override = st.sidebar.number_input(
-    "Exam Year (used only if the filename has no year, e.g. '30-1-2_...pdf')",
-    min_value=2000,
-    max_value=2100,
-    value=2025,
-    step=1
-)
+# Tucked into an expander, collapsed by default: this is only ever
+# used as a FALLBACK for the rare filename that doesn't already encode
+# its year (e.g. a real CBSE filename like "30-1-2_...pdf" already
+# carries everything needed) - it was sitting open in the sidebar at
+# all times even though most uploads never touch it.
+with st.sidebar.expander("Advanced: Exam Year fallback"):
+
+    year_override = st.number_input(
+        "Exam Year (used only if the filename has no year, e.g. "
+        "'30-1-2_...pdf')",
+        min_value=2000,
+        max_value=2100,
+        value=2025,
+        step=1
+    )
 
 # -----------------------
 # Direct PDF upload - no ZIP step.
@@ -378,4 +386,27 @@ if export and not df.empty:
 
     word_file = exporter.export()
 
-    st.success(f"Exported Word question bank to {word_file}")
+    # BUG FIX: this used to just print the server's file PATH
+    # (st.success(f"Exported to {word_file}")). That only ever worked
+    # when running locally, where "the server" and "your own laptop"
+    # are the same machine, so you happened to have filesystem access
+    # to that path yourself. On any real deployment, the student's
+    # browser has no access to the server's filesystem at all - there
+    # was no actual way to get the file, just a path that meant nothing
+    # to them. st.download_button sends the file's actual bytes to the
+    # browser, which is what makes a real "Save As" download happen
+    # regardless of where this app is deployed.
+    with open(word_file, "rb") as f:
+        word_bytes = f.read()
+
+    st.success("Word question bank ready.")
+
+    st.download_button(
+        label="⬇️ Download Word Question Bank",
+        data=word_bytes,
+        file_name=Path(word_file).name,
+        mime=(
+            "application/vnd.openxmlformats-officedocument"
+            ".wordprocessingml.document"
+        )
+    )

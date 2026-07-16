@@ -281,7 +281,40 @@ class QuestionExtractor:
                 if any(pos > h for h in section_heading_positions)
             ]
 
-        matches = list(self.question_pattern.finditer(text))
+        raw_matches = list(self.question_pattern.finditer(text))
+
+        # BUG FIX: a question that wraps onto a second line before any
+        # option markers appear (common on "(A) ... OR (B) ..." style
+        # questions) can end that first line with a number, e.g.
+        # "...its first term is 15." - and since "15." then starts the
+        # NEXT physical line, question_pattern (which matches at the
+        # start of a line) mistook it for the start of a brand new
+        # "Question 15", cutting the real question off right there.
+        # This is exactly the confirmed truncation bug: Q29 lost its
+        # second line and its marks label because of a stray "15." at
+        # the start of line 2.
+        #
+        # Fix: real question numbers only increase down a page. Any
+        # match whose number ISN'T greater than the previous accepted
+        # question's number is almost certainly a stray number at the
+        # start of a wrapped line, not a real question boundary -
+        # reject it, and its text stays part of the question already
+        # in progress instead of getting cut short.
+        matches = []
+        last_accepted_number = None
+
+        for m in raw_matches:
+
+            try:
+                n = int(m.group(1))
+            except ValueError:
+                continue
+
+            if last_accepted_number is not None and n <= last_accepted_number:
+                continue
+
+            matches.append(m)
+            last_accepted_number = n
 
         questions = []
 

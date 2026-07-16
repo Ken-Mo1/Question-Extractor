@@ -58,13 +58,6 @@ class OCREngine:
     OCR doesn't output real Devanagari text).
     """
 
-    # Below this average per-word confidence (0-100, as reported by
-    # Tesseract), a page is treated as non-English and skipped rather
-    # than fed through question-matching. Measured gap: ~44 on a real
-    # Hindi page vs ~91 on a real English page from the same paper -
-    # this threshold sits well clear of both.
-    ENGLISH_CONFIDENCE_THRESHOLD = 65
-
     # DPI-equivalent target for the image handed to Tesseract. Kept
     # high (unlike the old engine's downscaling) because Tesseract's
     # classical (non-neural) recognizer is fast regardless, and higher
@@ -112,24 +105,35 @@ class OCREngine:
 
     def read_lines_with_boxes(self, image_path):
         """
-        Returns (lines, elapsed_seconds, avg_confidence).
+        Returns (lines, elapsed_seconds, is_english, script_confidence).
 
         `lines` = list of (text, bbox) in PIXEL coordinates of the
         ORIGINAL image at `image_path` (scaled back up if internal
-        downscaling happened). `avg_confidence` = mean Tesseract word
-        confidence (0-100) across every recognized word on the page -
-        see the class docstring for why this replaces Devanagari
-        character-counting as the English/Hindi page signal.
+        downscaling happened).
 
-        Groups Tesseract's word-level boxes into visual lines by
-        vertical position (same approach as before) rather than
-        trusting Tesseract's own paragraph grouping, so tightly-packed
-        MCQ lines stay separate instead of merging.
+        `is_english` / `script_confidence` come from Tesseract's OSD
+        (script detection) mode, NOT from averaging word-recognition
+        confidence. An earlier version used average word confidence as
+        the English/Hindi signal - measured well on a couple of test
+        pages, but broke on real papers: a Hindi MCQ still contains
+        plenty of genuinely Latin content (diagram point labels like
+        A/B/C/P/Q, numbers, "(a)(b)(c)(d)" option markers), and since
+        the confidence average only counts words Tesseract actually
+        recognized, a handful of confidently-read digits and labels
+        was enough to drag a majority-Hindi page's average above the
+        English threshold - 28% of one real multi-paper run's output
+        turned out to be Hindi questions that slipped through this way.
+        OSD instead classifies the DOMINANT script of the page as a
+        whole (Devanagari vs Latin), which isn't fooled by a few
+        embedded Latin tokens - verified on the exact page that leaked
+        through before: OSD correctly reports Devanagari there.
         """
 
         t0 = time.perf_counter()
 
         image, scale = self._load_for_ocr(image_path)
+
+        is_english, script_confidence = self._detect_script(image)
 
         data = pytesseract.image_to_data(
             image,
@@ -139,7 +143,6 @@ class OCREngine:
         )
 
         words = []
-        confidences = []
 
         n = len(data["text"])
 
@@ -155,8 +158,6 @@ class OCREngine:
             if conf < 0:
                 continue
 
-            confidences.append(conf)
-
             x0 = data["left"][i]
             y0 = data["top"][i]
             x1 = x0 + data["width"][i]
@@ -167,10 +168,6 @@ class OCREngine:
                 "x0": x0, "y0": y0,
                 "x1": x1, "y1": y1,
             })
-
-        avg_confidence = (
-            sum(confidences) / len(confidences) if confidences else 0.0
-        )
 
         lines = self._group_words_into_lines(words)
 
@@ -185,7 +182,40 @@ class OCREngine:
 
         elapsed = time.perf_counter() - t0
 
-        return lines, elapsed, avg_confidence
+        return lines, elapsed, is_english, script_confidence
+
+    def _detect_script(self, image):
+        """
+        Returns (is_english, script_confidence) using Tesseract's OSD
+        mode, which classifies the page's DOMINANT script rather than
+        averaging per-word recognition confidence (see the docstring
+        above for why that distinction matters).
+
+        OSD needs a reasonable amount of readable text to work with -
+        on a near-blank page (e.g. a mostly-diagram or mostly-blank
+        page) it can fail outright. Treated as non-English in that
+        case: with nothing to go on, discarding is the safe default -
+        a real English page with content should always give OSD enough
+        to work with.
+        """
+
+        try:
+
+            osd = pytesseract.image_to_osd(
+                image,
+                config="--psm 0",
+                output_type=pytesseract.Output.DICT
+            )
+
+        except pytesseract.TesseractError:
+
+            return False, 0.0
+
+        script = osd.get("script", "")
+
+        confidence = float(osd.get("script_conf", 0.0) or 0.0)
+
+        return script == "Latin", confidence
 
     def _group_words_into_lines(self, words):
 

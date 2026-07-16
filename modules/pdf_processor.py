@@ -185,12 +185,13 @@ class PDFProcessor:
 
             timing["render_s"] = time.perf_counter() - t_render
 
-            ocr_lines, ocr_elapsed, ocr_confidence = self.ocr.read_lines_with_boxes(
-                rendered_image_path
+            ocr_lines, ocr_elapsed, ocr_is_english, ocr_script_conf = (
+                self.ocr.read_lines_with_boxes(rendered_image_path)
             )
 
             timing["ocr_s"] = ocr_elapsed
-            timing["ocr_confidence"] = ocr_confidence
+            timing["ocr_is_english"] = ocr_is_english
+            timing["ocr_script_confidence"] = ocr_script_conf
 
             ocr_text = "\n".join(text for text, _ in ocr_lines)
 
@@ -223,7 +224,7 @@ class PDFProcessor:
         # reliable gap. Native-text pages (no OCR involved) keep the
         # original character-ratio check.
         if source == "ocr":
-            if timing.get("ocr_confidence", 0.0) < self.ocr.ENGLISH_CONFIDENCE_THRESHOLD:
+            if not timing.get("ocr_is_english", False):
                 return 0, "not_english", timing
         elif not self.is_english_page(flat_text):
             return 0, "not_english", timing
