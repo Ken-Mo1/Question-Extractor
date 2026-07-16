@@ -5,8 +5,6 @@ PyMuPDF
 opencv-python-headless
 pillow
 python-docx
-paddleocr
-paddlepaddle-tiny
 sentence-transformers
 faiss-cpu
 openai
