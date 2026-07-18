@@ -65,6 +65,12 @@ class OCREngine:
     # option labels correctly - there's no speed reason to shrink it.
     MAX_OCR_WIDTH = 2600
 
+    # Minimum OSD script-detection confidence required to trust a
+    # "Latin" (English) verdict. See _detect_script for the real case
+    # this caught: a genuine Hindi page scored 1.18 here, while every
+    # confirmed English page scored 15+ - this sits safely between.
+    MIN_SCRIPT_CONFIDENCE = 5.0
+
     def __init__(self):
         # Nothing to load - unlike EasyOCR, Tesseract has no model
         # weights to read into memory, so there's no startup cost to
@@ -214,6 +220,19 @@ class OCREngine:
         script = osd.get("script", "")
 
         confidence = float(osd.get("script_conf", 0.0) or 0.0)
+
+        # BUG FIX: on a page with very little confidently-readable text
+        # (found on a real Hindi page whose only clean Latin content was
+        # a few diagram labels and digits), OSD can report "Latin" as
+        # its best guess at a very low confidence instead of failing
+        # outright - and that low-confidence guess was being trusted
+        # just like a real, high-confidence English page. Measured gap:
+        # genuine English pages scored ~15-19 here; the misdetected
+        # Hindi page scored 1.18. Require a real margin before trusting
+        # a Latin verdict; below it, treat as non-English rather than
+        # risk exactly this leak again.
+        if script == "Latin" and confidence < self.MIN_SCRIPT_CONFIDENCE:
+            return False, confidence
 
         return script == "Latin", confidence
 

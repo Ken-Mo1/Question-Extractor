@@ -526,14 +526,24 @@ class ChapterMapper:
 
         subject = str(subject).lower()
 
-        if "science" in subject:
+        # BUG FIX: "Social Science" contains the substring "science",
+        # so checking `"science" in subject` FIRST meant every Social
+        # Science paper matched this branch and got mapped against the
+        # SCIENCE keyword dictionary - "social" below was never even
+        # reached. That's why a Social Science paper came back with
+        # chapters like "Acids Bases and Salts" and "Our Environment" -
+        # real Science keyword matches, just against the wrong
+        # subject's dictionary entirely. Check the more specific
+        # "social" case first so "Social Science" can't be shadowed by
+        # the plain "science" check.
+        if "social" in subject:
+            mapping = self.sst
+
+        elif "science" in subject:
             mapping = self.science
 
         elif "math" in subject:
             mapping = self.maths
-
-        elif "social" in subject:
-            mapping = self.sst
 
         elif "english" in subject:
             mapping = self.english

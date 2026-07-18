@@ -42,6 +42,24 @@ class QuestionExtractor:
             re.compile(r'(\d)\s*Marks?$', re.I),
             re.compile(r'Marks?\s*[:\-]?\s*(\d)', re.I),
 
+            # BUG FIX: real CBSE papers very often DON'T print the word
+            # "Marks" at all next to a question - just a bare number in
+            # the margin, or a "1 x 3 = 3" style tag (question count x
+            # marks-each = total). None of the patterns above match
+            # either, so a confirmed real question like "...Explain
+            # with example. 1x3=3" or "...Explain. 3" was coming back
+            # with marks=None - which then fell through to the
+            # instructions-page range lookup instead of using the far
+            # more reliable number sitting right there on the question
+            # itself. "1x3=3" / "1×3=3": take the total (third number).
+            re.compile(r'\d+\s*[x\u00d7]\s*\d+\s*=\s*(\d+)\s*$', re.I),
+            # A bare 1-2 digit number immediately after the question's
+            # own closing punctuation (". 3", "? 2", etc) - anchored to
+            # sentence-ending punctuation specifically so this can't
+            # misfire on a number that's part of the question's actual
+            # content (a date, a coordinate, an equation's answer).
+            re.compile(r'(?<=[.?!])\s+(\d{1,2})\s*$'),
+
         ]
 
         # Real CBSE papers usually do NOT tag every individual MCQ/short
@@ -65,9 +83,10 @@ class QuestionExtractor:
             (re.compile(r'case[\s\-]*(study|based)', re.I), "Case Study"),
             (re.compile(r'source[\s\-]*based', re.I), "Case Study"),
             (re.compile(r'multiple\s+choice|\bmcqs?\b', re.I), "MCQ"),
-            (re.compile(r'very\s+short\s+answer|\bvsa\b', re.I), "Very Short Answer"),
-            (re.compile(r'short\s+answer|\bsa\b', re.I), "Short Answer"),
+            (re.compile(r'very[\s\-]*short[\s\-]*answer|\bvsa\b', re.I), "Very Short Answer"),
+            (re.compile(r'short[\s\-]*answer|\bsa\b', re.I), "Short Answer"),
             (re.compile(r'long\s+answer|\bla\b', re.I), "Long Answer"),
+            (re.compile(r'map[\s\-]*based', re.I), "Map Based"),
 
         ]
 
@@ -85,6 +104,101 @@ class QuestionExtractor:
             5: "Long Answer",
 
         }
+
+        # Explicit "Question nos. X to Y are <type>, carrying N marks
+        # each" statements, as CBSE instructions always state. Found by
+        # testing against a real Social Science paper: unlike the Math
+        # paper (which restates "consists of N questions of M marks
+        # each" again on each section's own page, right after its
+        # "SECTION - X" heading), this paper's marks/type wording
+        # appears ONLY ONCE, on the instructions page - and since that
+        # page has no "SECTION - X" heading of its own to anchor the
+        # existing proximity filter, every question ended up defaulting
+        # to whichever type/marks was mentioned LAST in the instructions
+        # (the same contamination bug fixed for the Math paper, just
+        # triggered a different way here).
+        #
+        # This is a more robust fix than another proximity filter: CBSE
+        # instructions always spell out the exact question-number range
+        # per section, so parse that directly and look up a question's
+        # marks/type by its actual number - no guessing based on what
+        # text happens to be nearby.
+        self.question_range_pattern = re.compile(
+            r'question\s*(?:numbers?|nos?\.?)\s*'
+            r'(?:from\s+)?(\d+)\s*'
+            r'(?:to|[-\u2013\u2014]|&|and)?\s*'
+            r'(\d+)?',
+            re.I
+        )
+
+    # ----------------------------------------------------
+
+    def _parse_question_ranges(self, text):
+        """
+        Finds every "Question nos./number(s) X (to/and) Y ..." statement
+        in `text` and returns a dict mapping each individual question
+        number in that range to (marks, type) - whichever of those two
+        it could find in the text immediately following the range (up
+        to the next such statement, or ~300 characters, whichever comes
+        first). Either value can be None if not found nearby; callers
+        should treat a None as "no override, use the existing fallback
+        logic" rather than as marks=None/type=None.
+        """
+
+        range_matches = list(self.question_range_pattern.finditer(text))
+
+        ranges = {}
+
+        for i, m in enumerate(range_matches):
+
+            try:
+                start_num = int(m.group(1))
+            except (TypeError, ValueError):
+                continue
+
+            end_num = start_num
+
+            if m.group(2):
+                try:
+                    end_num = int(m.group(2))
+                except ValueError:
+                    end_num = start_num
+
+            if end_num < start_num or end_num - start_num > 40:
+                # Sanity check: a real CBSE section never spans more
+                # than ~40 questions. Guards against misreading two
+                # unrelated numbers as a range.
+                continue
+
+            window_end = (
+                range_matches[i + 1].start()
+                if i + 1 < len(range_matches)
+                else min(len(text), m.end() + 300)
+            )
+
+            window = text[m.end():window_end]
+
+            marks = None
+
+            marks_match = re.search(r'(\d+)\s*marks?\b', window, re.I)
+
+            if marks_match:
+                try:
+                    marks = int(marks_match.group(1))
+                except ValueError:
+                    marks = None
+
+            q_type = None
+
+            for pattern, label in self.type_patterns:
+                if pattern.search(window):
+                    q_type = label
+                    break
+
+            for n in range(start_num, end_num + 1):
+                ranges[n] = (marks, q_type)
+
+        return ranges
 
     # ----------------------------------------------------
 
@@ -164,7 +278,7 @@ class QuestionExtractor:
 
         lines = [(line, None) for line in text.split("\n")]
 
-        questions, updated_marks, updated_type = self._extract_from_lines(
+        questions, updated_marks, updated_type, _, _ = self._extract_from_lines(
             lines, default_marks, default_type, apply_clean=True
         )
 
@@ -176,7 +290,8 @@ class QuestionExtractor:
     # ----------------------------------------------------
 
     def extract_questions_with_layout(
-        self, lines, default_marks=None, default_type=None
+        self, lines, default_marks=None, default_type=None,
+        default_last_number=None, known_ranges=None
     ):
         """
         Layout-aware entry point. `lines` is a list of (text, bbox)
@@ -186,16 +301,36 @@ class QuestionExtractor:
         spanning every line that question's text occupies, in PDF
         points - used to screenshot that question directly from the
         page, and a "type" key (MCQ / Very Short Answer / Short Answer
-        / Long Answer / Case Study / Assertion-Reason).
+        / Long Answer / Case Study / Assertion-Reason / Map Based).
+
+        `default_last_number`, like default_marks/default_type, carries
+        across pages: it's the last real question number accepted on
+        the PREVIOUS page, used to catch the same wrapped-line false
+        match (see _extract_from_lines) when it happens to be the
+        FIRST match on a new page, where there's no prior match on
+        that page alone to compare against.
+
+        `known_ranges`, also carried across pages, is a dict of
+        question_number -> (marks, type) parsed from explicit "Question
+        nos. X to Y ... N marks each" statements (see
+        _parse_question_ranges) - typically found once on the
+        instructions page and reused for the rest of the PDF. Takes
+        priority over the position-based nearest-mention heuristic when
+        both are available for a given question.
         """
 
         return self._extract_from_lines(
-            lines, default_marks, default_type, apply_clean=False
+            lines, default_marks, default_type, apply_clean=False,
+            default_last_number=default_last_number,
+            known_ranges=known_ranges
         )
 
     # ----------------------------------------------------
 
-    def _extract_from_lines(self, lines, default_marks, default_type, apply_clean):
+    def _extract_from_lines(
+        self, lines, default_marks, default_type, apply_clean,
+        default_last_number=None, known_ranges=None
+    ):
 
         # Join the lines into one string for regex matching, while
         # recording the exact (start, end, bbox) span of each line
@@ -225,6 +360,15 @@ class QuestionExtractor:
             # Only safe when there is no bbox info to preserve (the
             # OCR-fallback path) - clean() changes the string's length.
             text = self.clean(text)
+
+        # Explicit "Question nos. X to Y are <type>, N marks each"
+        # ranges, usually only stated once (on the instructions page)
+        # but carried forward for the rest of this PDF - see
+        # _parse_question_ranges for why this is more reliable than
+        # the position-based heuristic below for papers that never
+        # restate marks/type wording near the actual questions.
+        known_ranges = dict(known_ranges or {})
+        known_ranges.update(self._parse_question_ranges(text))
 
         section_marks = [
             (m.start(), int(m.group(1)))
@@ -301,9 +445,9 @@ class QuestionExtractor:
         # reject it, and its text stays part of the question already
         # in progress instead of getting cut short.
         matches = []
-        last_accepted_number = None
+        last_accepted_number = default_last_number
 
-        for m in raw_matches:
+        for i, m in enumerate(raw_matches):
 
             try:
                 n = int(m.group(1))
@@ -311,6 +455,41 @@ class QuestionExtractor:
                 continue
 
             if last_accepted_number is not None and n <= last_accepted_number:
+                continue
+
+            # BUG FIX: confirmed real case - a decorative bullet/border
+            # symbol on a cover page got OCR'd as "6)", immediately
+            # followed by a perfectly coherent English sentence (an
+            # instruction bullet, not a question) - so the content-
+            # quality check below can't catch it; it looks exactly like
+            # real text. But every real CBSE paper's first actual
+            # question is Q1, with no exceptions - so if this would be
+            # the very first accepted match for the WHOLE PDF and it
+            # isn't 1, it's not a real question boundary. Skip it and
+            # keep looking rather than letting it permanently block the
+            # real Q1-5 that come later (they'd all be <= this fake
+            # number and rejected by the check above).
+            if last_accepted_number is None and n != 1:
+                continue
+
+            # BUG FIX: a decorative bullet/border symbol on a cover
+            # page (no real questions on it at all) got OCR'd as "6)"
+            # and was accepted as a genuine "Question 6" - which then
+            # permanently blocked every real Q1-5 later in the same
+            # PDF, since they're all <= 6 and the check above rejects
+            # anything that doesn't increase. The number-only check
+            # can't tell a real question start from a stray OCR'd
+            # symbol; peeking at what text actually follows the match
+            # can. Real questions have real sentences after them -
+            # this page's fake "6)" was followed by page-border noise.
+            peek_end = (
+                raw_matches[i + 1].start()
+                if i + 1 < len(raw_matches)
+                else min(len(text), m.end() + 200)
+            )
+            peek_text = text[m.end():peek_end]
+
+            if not self.is_valid_question(peek_text):
                 continue
 
             matches.append(m)
@@ -325,7 +504,10 @@ class QuestionExtractor:
             updated_type = (
                 section_types[-1][1] if section_types else default_type
             )
-            return questions, updated_marks, updated_type
+            return (
+                questions, updated_marks, updated_type,
+                last_accepted_number, known_ranges
+            )
 
         for i, match in enumerate(matches):
 
@@ -335,6 +517,23 @@ class QuestionExtractor:
                 end = len(text)
             else:
                 end = matches[i + 1].start()
+
+            # BUG FIX: confirmed real case - Q29's block used to run
+            # all the way to Q30's match, which meant it also absorbed
+            # the "SECTION - D / (Long Answer Type Questions)..."
+            # heading sitting between them. That pushed Q29's own real
+            # trailing marks number ("...examples. 3") away from the
+            # end of the block, so the end-anchored marks patterns
+            # could no longer find it - the block's new end was the
+            # section heading's "(4 x 5 = 20)" instead. A question's
+            # content never legitimately continues past the next
+            # section heading, so cap the block there too.
+            heading_within = [
+                h for h in section_heading_positions if start < h < end
+            ]
+
+            if heading_within:
+                end = min(heading_within)
 
             block = text[start:end].strip()
 
@@ -350,13 +549,31 @@ class QuestionExtractor:
 
             marks, block = self.extract_marks(block)
 
+            range_marks, range_type = known_ranges.get(
+                int(number) if number.isdigit() else -1, (None, None)
+            )
+
             if marks is None:
-                marks = self._default_marks_for_position(
-                    start, section_marks, default_marks
+                # Explicit "Question nos. X to Y ... N marks each"
+                # ranges (see _parse_question_ranges) are the most
+                # reliable source when available - they come straight
+                # from the paper's own instructions, keyed by the
+                # question's real number, rather than guessed from
+                # whatever text happens to sit nearest it on the page.
+                marks = (
+                    range_marks
+                    if range_marks is not None
+                    else self._default_marks_for_position(
+                        start, section_marks, default_marks
+                    )
                 )
 
-            question_type = self._default_type_for_position(
-                start, section_types, default_type
+            question_type = (
+                range_type
+                if range_type is not None
+                else self._default_type_for_position(
+                    start, section_types, default_type
+                )
             )
 
             if question_type is None and marks in self.MARKS_TYPE_FALLBACK:
@@ -391,7 +608,10 @@ class QuestionExtractor:
             section_types[-1][1] if section_types else default_type
         )
 
-        return questions, updated_marks, updated_type
+        return (
+            questions, updated_marks, updated_type,
+            last_accepted_number, known_ranges
+        )
 
     # ----------------------------------------------------
 

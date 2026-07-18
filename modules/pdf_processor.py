@@ -49,6 +49,48 @@ class PDFProcessor:
 
         self._current_default_type = None
 
+        self._current_last_question_number = None
+
+        self._current_known_ranges = None
+
+    # -------------------------------------------------------
+    # Strip page-footer noise from OCR output
+    # -------------------------------------------------------
+
+    def _is_footer_line(self, text):
+        """
+        True for lines that are page-footer furniture rather than
+        question content: the QP code repeated on every page (e.g.
+        "32/6/2"), "P.T.O.", or a lone page number. These need to be
+        filtered out of OCR results before question-matching, or they
+        get appended to whichever question happens to be last on the
+        page - confirmed pushing a real trailing marks tag out of reach
+        of the end-anchored patterns in extract_marks().
+        """
+
+        stripped = text.strip()
+
+        if not stripped:
+            return True
+
+        if re.fullmatch(r'\d{1,2}\s*/\s*\d{1,2}\s*/\s*\d{1,2}', stripped):
+            return True
+
+        if re.search(r'P\.?\s*T\.?\s*O\.?', stripped, re.I) and len(stripped) < 40:
+            return True
+
+        if re.fullmatch(r'\d{1,3}', stripped):
+            return True
+
+        # QP code + page number + P.T.O. often OCR onto one combined
+        # line (e.g. "32/6/2 3 i P.T.O.") - catch that combined form
+        # too, not just each piece in isolation.
+        if re.search(r'\d{1,2}\s*/\s*\d{1,2}\s*/\s*\d{1,2}', stripped) and \
+                re.search(r'P\.?\s*T\.?\s*O', stripped, re.I):
+            return True
+
+        return False
+
     # -------------------------------------------------------
     # Determine whether embedded PDF text is good enough
     # -------------------------------------------------------
@@ -193,6 +235,22 @@ class PDFProcessor:
             timing["ocr_is_english"] = ocr_is_english
             timing["ocr_script_confidence"] = ocr_script_conf
 
+            # BUG FIX: the page footer (QP code like "32/6/2", a lone
+            # page number, "P.T.O.") was getting OCR'd as ordinary text
+            # lines and tacked onto whatever question happened to be
+            # LAST on that page - since that question's block runs to
+            # the end of the page's text with nothing to bound it.
+            # Confirmed: this pushed a real trailing marks tag ("...the
+            # country. 3") out from the end of the block, past a chunk
+            # of footer noise, so the end-anchored marks patterns could
+            # no longer find it. Native-text extraction already strips
+            # these (see PDFTextExtractor); OCR output needs the same
+            # treatment before it reaches question-matching.
+            ocr_lines = [
+                (t, b) for t, b in ocr_lines
+                if not self._is_footer_line(t)
+            ]
+
             ocr_text = "\n".join(text for text, _ in ocr_lines)
 
             # should_use_ocr() already decided the native text wasn't
@@ -229,12 +287,18 @@ class PDFProcessor:
         elif not self.is_english_page(flat_text):
             return 0, "not_english", timing
 
-        questions, self._current_default_marks, self._current_default_type = (
-            self.extractor.extract_questions_with_layout(
-                lines,
-                self._current_default_marks,
-                self._current_default_type
-            )
+        (
+            questions,
+            self._current_default_marks,
+            self._current_default_type,
+            self._current_last_question_number,
+            self._current_known_ranges,
+        ) = self.extractor.extract_questions_with_layout(
+            lines,
+            self._current_default_marks,
+            self._current_default_type,
+            self._current_last_question_number,
+            self._current_known_ranges,
         )
 
         if not questions:
@@ -344,6 +408,8 @@ class PDFProcessor:
         # leak from one paper into the next.
         self._current_default_marks = None
         self._current_default_type = None
+        self._current_last_question_number = None
+        self._current_known_ranges = None
 
         # Open the PDF ONCE and share it across every page - text
         # extraction, font inspection, and (if needed) rendering.
